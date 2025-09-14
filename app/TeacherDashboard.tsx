@@ -3,11 +3,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { get, onValue, ref, remove, set } from 'firebase/database';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, FlatList, ImageBackground, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { G, Path, Svg } from 'react-native-svg';
+import { Circle, G, Path, Svg } from 'react-native-svg';
 import { auth, db } from '../constants/firebaseConfig';
 
 const bgImage = require('../assets/images/bg.jpg');
@@ -40,7 +41,7 @@ type ModalType = 'addClass' | 'addStudent' | 'announce' | 'category' | 'taskInfo
 function getPerformanceDistribution(students: Student[] = [], type: 'pre' | 'post') {
   const categories = [
     { label: 'Not yet taken', color: '#c0c0c0' },
-    { label: 'Intervention', color: '#e6f4ea' },      // red
+    { label: '7', color: '#e6f4ea' },      // red
     { label: 'Consolidation', color: '#c2e8cd' },    // peach/orange
     { label: 'Enhancement', color: '#a0d9b5' },      // yellow
     { label: 'Proficient', color: '#7ccc98' },       // light green
@@ -145,7 +146,7 @@ export default function TeacherDashboard() {
   const [classSection, setClassSection] = useState('');
   const [studentNickname, setStudentNickname] = useState('');
   const [announceText, setAnnounceText] = useState('');
-  // Removed unused selectedCategory state
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [testType, setTestType] = useState<'pre' | 'post' | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
@@ -153,7 +154,6 @@ export default function TeacherDashboard() {
   const [sortAsc, setSortAsc] = useState(true);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [editingStudentName, setEditingStudentName] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [improvementData, setImprovementData] = useState<{ student: Student, pre: number, post: number, preStatus: string, postStatus: string } | null>(null);
   const [evaluationData, setEvaluationData] = useState<{ student: Student, classId: string } | null>(null);
   const [evaluationText, setEvaluationText] = useState('');
@@ -183,6 +183,9 @@ export default function TeacherDashboard() {
   const [evaluationShowAllTasks, setEvaluationShowAllTasks] = useState(false);
   // Add state for ghostwriter text visibility
   const [showGhostwriterText, setShowGhostwriterText] = useState(true);
+  // Quarter selection state
+  const [selectedQuarter, setSelectedQuarter] = useState<number>(1);
+  const [quarterMenuOpen, setQuarterMenuOpen] = useState<boolean>(false);
   // Add state for ghostwriter loading statements
   const ghostLoadingStatements = [
     'Analyzing tasks and progress...',
@@ -195,6 +198,11 @@ export default function TeacherDashboard() {
   const [openMenuClassId, setOpenMenuClassId] = useState<string | null>(null);
   // Add state for profile menu
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const router = useRouter();
+  // Add state for AI Profiler
+  const [aiProfile, setAiProfile] = useState<string | null>(null);
+  const [aiProfileLoading, setAiProfileLoading] = useState(false);
+  const [aiProfileError, setAiProfileError] = useState<string | null>(null);
 
   // Place all useEffect hooks here, after all useState hooks
   useEffect(() => {
@@ -209,7 +217,7 @@ export default function TeacherDashboard() {
       if (interval) clearInterval(interval);
     }
     return () => { if (interval) clearInterval(interval); };
-  }, [ghostLoading, ghostLoadingStatements.length]);
+  }, [ghostLoading]);
 
   // Add useEffect to handle auto-selecting class for announcements
   useEffect(() => {
@@ -256,8 +264,8 @@ export default function TeacherDashboard() {
             setCurrentTeacher(teacherData);
             setTeacherName(teacherData.name.split(' ')[0]); // Get first name
           }
-        } catch {
-          console.error('Error loading teacher data');
+        } catch (error) {
+          console.error('Error loading teacher data:', error);
         }
       }
       setLoading(false);
@@ -309,7 +317,8 @@ export default function TeacherDashboard() {
   const getClassById = (id: string | null) => classes.find(cls => cls.id === id) || null;
 
   // Analytics calculations
-  // Removed unused totalClasses and totalStudents variables
+  const totalClasses = classes?.length || 0;
+  const totalStudents = classes?.reduce((sum, c) => sum + (c.students?.length || 0), 0) || 0;
   const allPerformance = classes?.flatMap(c => c.learnersPerformance?.map(lp => lp.percent) || []) || [];
   // For dashboard avgImprovement, only include students with both pre and post and pre > 0
   const allStudentsWithBoth = classes.flatMap(cls => (cls.students ?? []).filter(s => {
@@ -320,7 +329,7 @@ export default function TeacherDashboard() {
     // Only include if both pre and post exist and pre > 0 and post > 0
     return hasPre && hasPost && pre > 0 && post > 0;
   }));
-  // Removed unused avgPerformance variable
+  const avgPerformance = allPerformance.length ? Math.round(allPerformance.reduce((a, b) => a + b, 0) / allPerformance.length) : 0;
   let dashboardAvgImprovement = 0;
   if (allStudentsWithBoth.length > 0) {
     const improvements = allStudentsWithBoth.map(s => {
@@ -396,16 +405,69 @@ export default function TeacherDashboard() {
       if (extra?.student) {
         setSelectedStudent(extra.student);
         setParentAuthCode(null); // reset first
+        setAiProfile(null);
+        setAiProfileError(null);
+        setAiProfileLoading(true);
         if (extra.student.parentId) {
           const parentRef = ref(db, `Parents/${extra.student.parentId}`);
-          get(parentRef).then(snap => {
+          get(parentRef).then(async snap => {
             if (snap.exists()) {
               const parentData = snap.val();
               setParentAuthCode(parentData.authCode || null);
+              // Fetch parent tasks
+              let parentTasks = [];
+              try {
+                const tasksSnap = await get(ref(db, `Parents/${extra.student.parentId}/tasks`));
+                if (tasksSnap.exists()) {
+                  parentTasks = tasksSnap.val();
+                  if (!Array.isArray(parentTasks)) parentTasks = Object.values(parentTasks);
+                }
+              } catch {}
+              // Build prompt for GPT
+              const prompt = `You are an educational AI profiler. In responding dont use design in text like bold or italic, just plain. Give a very brief student profile here, just need to know what type of student and household he/she is living. Must be very brief one paragraph limit and dont add :. Here is all the information about a student and their parent:
+
+Student:
+- Name: ${extra.student.nickname}
+- Student Number: ${extra.student.studentNumber}
+- Class: ${extra.student.classId}
+- Pre-test: Pattern: ${extra.student.preScore?.pattern ?? 0}, Numbers: ${extra.student.preScore?.numbers ?? 0}, Total: ${(extra.student.preScore?.pattern ?? 0) + (extra.student.preScore?.numbers ?? 0)}/20
+- Post-test: Pattern: ${extra.student.postScore?.pattern ?? 0}, Numbers: ${extra.student.postScore?.numbers ?? 0}, Total: ${(extra.student.postScore?.pattern ?? 0) + (extra.student.postScore?.numbers ?? 0)}/20
+
+Parent:
+- Name: ${parentData.name}
+- Auth Code: ${parentData.authCode}
+- Contact: ${parentData.contact}
+- Household Income: ${parentData.householdIncome}
+- Tasks: ${parentTasks.length}
+${parentTasks.map((t: any, i: number) => `  ${i+1}. ${t.title} (Status: ${t.status}, Pre: ${t.preRating ?? '-'}, Post: ${t.postRating ?? '-'})`).join('\n')}
+
+Generate a concise, insightful AI profile for the teacher. Highlight the student's learning strengths, areas for growth, parent engagement, and any recommendations for next steps. Use a supportive, professional tone.`;
+              setAiProfileLoading(true);
+              setAiProfileError(null);
+              try {
+                const response = await askGpt(prompt);
+                setAiProfile(response);
+              } catch (err) {
+                setAiProfileError('Failed to generate AI profile.');
+                setAiProfile(null);
+              }
+              setAiProfileLoading(false);
             } else {
               setParentAuthCode(null);
+              setAiProfileError('No parent data found.');
+              setAiProfile(null);
+              setAiProfileLoading(false);
             }
-          }).catch(() => setParentAuthCode(null));
+          }).catch(() => {
+            setParentAuthCode(null);
+            setAiProfileError('No parent data found.');
+            setAiProfile(null);
+            setAiProfileLoading(false);
+          });
+        } else {
+          setAiProfileError('No parent linked.');
+          setAiProfile(null);
+          setAiProfileLoading(false);
         }
       }
     }
@@ -542,7 +604,8 @@ export default function TeacherDashboard() {
       
       if (studentsSnapshot.exists()) {
         const students = studentsSnapshot.val();
-        // Removed unused schoolAbbreviation variable
+        // Generate school abbreviation for filtering
+        const schoolAbbreviation = classData.school.split(' ').map((word: string) => word.charAt(0)).join('') + 'ES';
         const classStudents = Object.values(students).filter((student: any) => 
           student.classId === selectedClassId
         );
@@ -615,8 +678,12 @@ export default function TeacherDashboard() {
         `Student added successfully!\n\nStudent ID: ${studentId}\nParent Auth Code: ${authCode}`
       );
       closeModal();
-    } catch {
-      Alert.alert('Error', 'Failed to add student. Please try again.');
+    } catch (error: any) {
+      let errorMessage = 'Failed to add student. Please try again.';
+      if (error.message) {
+        errorMessage = error.message;
+      }
+      Alert.alert('Error', errorMessage);
     }
   };
 
@@ -648,7 +715,7 @@ export default function TeacherDashboard() {
               }
               
               Alert.alert('Success', 'Class deleted successfully!');
-            } catch {
+            } catch (error) {
               Alert.alert('Error', 'Failed to delete class.');
             }
           }
@@ -691,7 +758,7 @@ export default function TeacherDashboard() {
               }
               
               Alert.alert('Success', 'Student deleted successfully!');
-            } catch {
+            } catch (error) {
               Alert.alert('Error', 'Failed to delete student.');
             }
           }
@@ -703,14 +770,18 @@ export default function TeacherDashboard() {
   const startTest = () => {
     // Navigate to loading screen with student and classId as params
     if (selectedStudent && selectedClassId && testType === 'pre') {
-      
+      router.push({ pathname: '/LoadingScreen', params: { studentId: selectedStudent.id, classId: selectedClassId } });
       closeModal();
     } else {
       Alert.alert('Error', 'Missing student or class information.');
     }
   };
 
-  // Removed unused editStudent function
+  const editStudent = () => {
+    // TODO: Implement edit student functionality
+    Alert.alert('Edit Student', 'Edit functionality will be implemented soon.');
+      closeModal();
+  };
 
 
 
@@ -886,7 +957,72 @@ export default function TeacherDashboard() {
     let avgImprovementColor = '#ffe066';
     if (avgImprovement > 0) avgImprovementColor = '#27ae60';
     else if (avgImprovement < 0) avgImprovementColor = '#ff5a5a';
-    // Removed unused handleSort function
+    // Header click handler
+    const handleSort = (col: 'name' | 'status' | 'pre' | 'post') => {
+      if (sortColumn === col) {
+        setSortAsc(!sortAsc);
+      } else {
+        setSortColumn(col);
+        setSortAsc(true);
+      }
+    };
+    // Compute averages and helper lists for the compact dashboard card
+    const preScores = (cls.students || [])
+      .map(s => (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0))
+      .filter(v => typeof v === 'number' && v > 0);
+    const postScores = (cls.students || [])
+      .map(s => (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0))
+      .filter(v => typeof v === 'number' && v > 0);
+    const avgPre = preScores.length ? Math.round(preScores.reduce((a, b) => a + b, 0) / preScores.length) : 0;
+    const avgPostClass = postScores.length ? Math.round(postScores.reduce((a, b) => a + b, 0) / postScores.length) : 0;
+    const prePercent = Math.max(0, Math.min(100, Math.round((avgPre / 20) * 100)));
+    const postPercent = Math.max(0, Math.min(100, Math.round((avgPostClass / 20) * 100)));
+    const avgPreOutOf10 = Math.round(avgPre / 2);
+    const avgPostOutOf10 = Math.round(avgPostClass / 2);
+    const studentsSortedByPost = [...(cls.students || [])].sort((a, b) => {
+      const aScore = (a.postScore?.pattern ?? 0) + (a.postScore?.numbers ?? 0);
+      const bScore = (b.postScore?.pattern ?? 0) + (b.postScore?.numbers ?? 0);
+      return bScore - aScore;
+    });
+    const topStudents = studentsSortedByPost.filter(s => ((s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0)) > 0).slice(0, 7);
+    const forMonitoring = [...(cls.students || [])]
+      .sort((a, b) => {
+        const aScore = (a.postScore?.pattern ?? 0) + (a.postScore?.numbers ?? 0);
+        const bScore = (b.postScore?.pattern ?? 0) + (b.postScore?.numbers ?? 0);
+        return aScore - bScore;
+      })
+      .slice(0, 7);
+    const weekProgress = [60, 78, 82, 90, 68, 88, 93, 75];
+
+    const Donut = ({ percent, color }: { percent: number; color: string }) => {
+      const size = 68;
+      const stroke = 8;
+      const radius = (size - stroke) / 2;
+      const circumference = 2 * Math.PI * radius;
+      const dashOffset = circumference * (1 - Math.max(0, Math.min(1, percent / 100)));
+      return (
+        <View style={styles.donutWrap}>
+          <Svg width={size} height={size}>
+            <G rotation={-90} originX={size / 2} originY={size / 2}>
+              <Circle cx={size / 2} cy={size / 2} r={radius} stroke="#eee" strokeWidth={stroke} fill="transparent" />
+              <Circle
+                cx={size / 2}
+                cy={size / 2}
+                r={radius}
+                stroke={color}
+                strokeWidth={stroke}
+                strokeDasharray={`${circumference} ${circumference}`}
+                strokeDashoffset={dashOffset}
+                strokeLinecap="round"
+                fill="transparent"
+              />
+            </G>
+          </Svg>
+          <Text style={styles.donutCenterText}>{percent}%</Text>
+        </View>
+      );
+    };
+
     return (
       <LinearGradient colors={['#f7fafc', '#e0f7fa']} style={[styles.classCard, { marginBottom: 15, padding: 2, borderRadius: 32, shadowColor: '#27ae60', shadowOpacity: 0.13, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 10, width: '100%', maxWidth: 540, alignSelf: 'center' }]}> 
         <View style={{ padding: isSmall ? 16 : 24, paddingBottom: isSmall ? 0 : 8 }}>
@@ -938,36 +1074,79 @@ export default function TeacherDashboard() {
             </View>
           </View>
           <View style={{ marginTop: isSmall ? 8 : 16 }}>
-            <AnalyticsPieChartWithLegend data={getPerformanceDistribution(cls.students || [], 'pre')} title="Pretest Performance" />
-            <View style={{ height: 10 }} />
-            <AnalyticsPieChartWithLegend data={getPerformanceDistribution(cls.students || [], 'post')} reverse title="Posttest Performance" />
-            {/* Class averages below posttest chart */}
-            <View style={styles.compactCardRow}>
-              {/* Avg. Improvement */}
-              <View style={styles.compactCardCol}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
-                  <MaterialIcons name="trending-up" size={20} color={avgImprovementColor} style={{ marginRight: 4 }} />
-                  <Text style={styles.compactCardLabel}>Avg. Improvement</Text>
-                  <Pressable onPress={() => Alert.alert('Average Improvement', 'This shows the average percentage improvement from pre-test to post-test for students who took both tests.')}
-                    style={{ marginLeft: 2 }}>
-                    <MaterialIcons name="info-outline" size={13} color="#888" />
-                  </Pressable>
-            </View>
-                <Text style={[styles.compactCardValue, { color: avgImprovementColor }]}>{avgImprovement > 0 ? '+' : ''}{avgImprovement}%</Text>
+            <View style={styles.quarterCard}>
+              <View style={styles.quarterHeaderRow}>
+                <Pressable style={styles.quarterSelectBtn} onPress={() => setQuarterMenuOpen(!quarterMenuOpen)}>
+                  <Text style={styles.quarterTitle}>{`Quarter ${selectedQuarter}`}</Text>
+                  <MaterialIcons name={quarterMenuOpen ? 'expand-less' : 'expand-more'} size={20} color="#222" />
+                </Pressable>
               </View>
-              {/* Divider */}
-              <View style={styles.compactCardDivider} />
-              {/* Avg. Post-test */}
-              <View style={styles.compactCardCol}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
-                  <MaterialIcons name="bar-chart" size={20} color="#0097a7" style={{ marginRight: 4 }} />
-                  <Text style={styles.compactCardLabel}>Avg. Post-test</Text>
-                  <Pressable onPress={() => Alert.alert('Average Post-test', 'This shows the average post-test score (out of 20) for students who took both tests.')}
-                    style={{ marginLeft: 2 }}>
-                    <MaterialIcons name="info-outline" size={13} color="#888" />
-                  </Pressable>
+              {quarterMenuOpen && (
+                <View style={styles.quarterDropdownMenu}>
+                  {[1, 2, 3, 4].map(q => (
+                    <TouchableOpacity key={`q-${q}`} style={styles.quarterDropdownItem} onPress={() => { setSelectedQuarter(q); setQuarterMenuOpen(false); }}>
+                      <Text style={[styles.quarterDropdownText, selectedQuarter === q ? styles.quarterDropdownTextActive : undefined]}>{`Quarter ${q}`}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
-                <Text style={[styles.compactCardValue, { color: '#0097a7' }]}>{avgPost}/20</Text>
+              )}
+              <View style={styles.quarterBodyRow}>
+                <View style={styles.ringsRow}>
+                  <View style={styles.ringCol}>
+                    <Donut percent={prePercent} color="#27ae60" />
+                    <Text style={styles.ringLabel}>Avg. Pretest</Text>
+                    <Text style={styles.ringSubLabel}>{avgPreOutOf10}/10</Text>
+                  </View>
+                  <View style={styles.ringCol}>
+                    <Donut percent={postPercent} color="#ff5a5a" />
+                    <Text style={styles.ringLabel}>Avg. Post-test</Text>
+                    <Text style={styles.ringSubLabel}>{avgPostOutOf10}/10</Text>
+                  </View>
+                </View>
+                <View style={styles.weeksCol}>
+                  {weekProgress.map((p, idx) => (
+                    <View key={`week-${idx}`} style={styles.weekRow}>
+                      <Text style={styles.weekLabel}>Week {idx + 1}</Text>
+                      <View style={styles.weekBarBg}>
+                        <View style={[styles.weekBarFill, { width: `${p}%` }]} />
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginTop: 12 }}>
+              <View style={[styles.listCard, { flex: 1 }]}>
+                <Text style={styles.listTitle}>Top Students</Text>
+                {topStudents.map((s, idx) => {
+                  const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
+                  const score10 = Math.round(post / 2);
+                  return (
+                    <View key={`top-${s.id}`} style={styles.rankRow}>
+                      <View style={[styles.rankBadge, styles.rankBadgeTop]}>
+                        <Text style={styles.rankBadgeText}>{idx + 1}</Text>
+                      </View>
+                      <Text style={styles.rankName}>{s.nickname}</Text>
+                      <Text style={[styles.rankScore, styles.rankScoreTop]}>{score10}/10</Text>
+                    </View>
+                  );
+                })}
+              </View>
+              <View style={[styles.listCard, { flex: 1 }]}>
+                <Text style={[styles.listTitle, { color: '#ff5a5a' }]}>For Monitoring</Text>
+                {forMonitoring.map((s, idx) => {
+                  const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
+                  const score10 = Math.round(post / 2);
+                  return (
+                    <View key={`watch-${s.id}`} style={styles.rankRow}>
+                      <View style={[styles.rankBadge, styles.rankBadgeWatch]}>
+                        <Text style={styles.rankBadgeText}>{idx + 1}</Text>
+                      </View>
+                      <Text style={styles.rankName}>{s.nickname}</Text>
+                      <Text style={[styles.rankScore, styles.rankScoreWatch]}>{score10}/10</Text>
+                    </View>
+                  );
+                })}
               </View>
             </View>
           </View>
@@ -1708,7 +1887,7 @@ export default function TeacherDashboard() {
         );
       case 'showImprovement':
         if (!improvementData) return null;
-        const { student } = improvementData; // Removed unused variables
+        const { student, pre, post, preStatus, postStatus } = improvementData;
         // Use the actual student object to get pattern/numbers breakdown
         const preScore = student.preScore || { pattern: 0, numbers: 0 };
         const postScore = student.postScore || { pattern: 0, numbers: 0 };
@@ -1900,6 +2079,8 @@ export default function TeacherDashboard() {
                       width: '100%',
                       height: '100%',
                       backgroundColor: 'rgba(255,255,255,0.85)',
+                      transitionProperty: 'opacity',
+                      transitionDuration: '300ms',
                       opacity: ghostLoading ? 1 : 0,
                     }}>
                       <View style={{
@@ -1991,6 +2172,13 @@ export default function TeacherDashboard() {
             </Text>
             <Text style={styles.modalStat}>Pre-test: <Text style={styles.modalStatNum}>{selectedStudent?.preScore ? String((selectedStudent.preScore.pattern ?? 0) + (selectedStudent.preScore.numbers ?? 0)) : 'N/A'}/20</Text> (Pattern: {String(selectedStudent?.preScore?.pattern ?? 0)}, Numbers: {String(selectedStudent?.preScore?.numbers ?? 0)})</Text>
             <Text style={styles.modalStat}>Post-test: <Text style={styles.modalStatNum}>{selectedStudent?.postScore ? String((selectedStudent.postScore.pattern ?? 0) + (selectedStudent.postScore.numbers ?? 0)) : 'N/A'}/20</Text> (Pattern: {String(selectedStudent?.postScore?.pattern ?? 0)}, Numbers: {String(selectedStudent?.postScore?.numbers ?? 0)})</Text>
+            {/* AI Profiler Section */}
+            <View style={{ marginTop: 16, padding: 12, backgroundColor: '#f3f6f8', borderRadius: 14, borderWidth: 1, borderColor: '#e0e6ea' }}>
+              <Text style={{ fontWeight: 'bold', color: '#6c63ff', fontSize: 15, marginBottom: 6 }}>AI Profiler</Text>
+              {aiProfileLoading && <Text style={{ color: '#888', fontStyle: 'italic' }}>Generating profile...</Text>}
+              {aiProfileError && <Text style={{ color: '#ff5a5a' }}>{aiProfileError}</Text>}
+              {aiProfile && <Text style={{ color: '#222', fontSize: 14 }}>{aiProfile}</Text>}
+            </View>
             <Pressable style={[styles.modalBtn, { alignSelf: 'center', marginTop: 10 }]} onPress={closeModal}><Text style={styles.modalBtnText}>Close</Text></Pressable>
           </View>
         );
@@ -2565,6 +2753,188 @@ const styles = StyleSheet.create({
     backgroundColor: '#e0f7e2',
     marginHorizontal: 12,
     borderRadius: 1,
+  },
+  // New styles for the compact dashboard mock
+  donutWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  donutCenterText: {
+    position: 'absolute',
+    fontWeight: 'bold',
+    color: '#222',
+    fontSize: 14,
+  },
+  quarterCard: {
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#e6e6e6',
+    padding: 12,
+  },
+  quarterHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  quarterTitle: {
+    fontWeight: '800',
+    color: '#222',
+    fontSize: 18,
+  },
+  quarterBodyRow: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    justifyContent: 'flex-start',
+    gap: 10,
+  },
+  ringsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    paddingHorizontal: 0,
+    marginBottom: 12,
+  },
+  ringCol: {
+    width: 118,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    marginHorizontal: 14,
+  },
+  ringLabel: {
+    marginTop: 6,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#222',
+    textAlign: 'center',
+  },
+  ringSubLabel: {
+    fontSize: 12,
+    color: '#888',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  weeksCol: {
+    flex: 1,
+    paddingHorizontal: 6,
+  },
+  weekRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  weekLabel: {
+    width: 64,
+    fontSize: 13,
+    color: '#222',
+    fontWeight: '700',
+  },
+  weekBarBg: {
+    flex: 1,
+    height: 10,
+    backgroundColor: '#e6e6e6',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  weekBarFill: {
+    height: 10,
+    backgroundColor: '#27ae60',
+    borderRadius: 6,
+  },
+  quarterSelectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  quarterDropdownMenu: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e6e6e6',
+    borderRadius: 12,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  quarterDropdownItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  quarterDropdownText: {
+    fontSize: 14,
+    color: '#222',
+    fontWeight: '600',
+  },
+  quarterDropdownTextActive: {
+    color: '#27ae60',
+  },
+  listCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e6e6e6',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  listTitle: {
+    fontWeight: '800',
+    color: '#27ae60',
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  listItem: {
+    fontSize: 13,
+    color: '#222',
+    marginBottom: 6,
+    fontWeight: '600',
+  },
+  rankRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    backgroundColor: '#fafafa',
+    borderRadius: 10,
+    marginBottom: 6,
+  },
+  rankBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  rankBadgeTop: {
+    backgroundColor: 'rgba(39,174,96,0.12)',
+  },
+  rankBadgeWatch: {
+    backgroundColor: 'rgba(255,90,90,0.12)',
+  },
+  rankBadgeText: {
+    fontWeight: '800',
+    color: '#222',
+  },
+  rankName: {
+    flex: 1,
+    fontSize: 14,
+    color: '#222',
+    fontWeight: '600',
+  },
+  rankScore: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  rankScoreTop: {
+    color: '#27ae60',
+  },
+  rankScoreWatch: {
+    color: '#ff5a5a',
   },
   modalLabel: {
     fontSize: 15,

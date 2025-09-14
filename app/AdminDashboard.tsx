@@ -2,6 +2,7 @@ import { AntDesign, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-i
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import * as Speech from 'expo-speech';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { get, onValue, ref, remove, set, update } from 'firebase/database';
 import { useEffect, useState } from 'react';
@@ -176,6 +177,10 @@ export default function AdminDashboard() {
   } | null>(null);
   const [isTestingGptApi, setIsTestingGptApi] = useState(false);
   const [isTestingGeneralHealth, setIsTestingGeneralHealth] = useState(false);
+  
+  // TTS State
+  const [ttsText, setTtsText] = useState('');
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
   const windowWidth = Dimensions.get('window').width;
   const windowHeight = Dimensions.get('window').height;
@@ -184,7 +189,127 @@ export default function AdminDashboard() {
   const isLargeScreen = windowWidth >= 600;
   const numColumns = isSmallScreen ? 1 : isMediumScreen ? 2 : 3;
 
-  
+  // TTS Function
+  const speakText = async () => {
+    if (!ttsText.trim()) {
+      Alert.alert('Walang Text', 'Mag-type muna ng text na gusto mong pakinggan.');
+      return;
+    }
+
+    try {
+      setIsSpeaking(true);
+      
+      // Stop any current speech
+      await Speech.stop();
+      
+      // Add friendly Filipino greeting if text doesn't start with one
+      const friendlyText = ttsText.toLowerCase().includes('kamusta') || 
+                          ttsText.toLowerCase().includes('magandang') ||
+                          ttsText.toLowerCase().includes('hello') || 
+                          ttsText.toLowerCase().includes('hi') ||
+                          ttsText.toLowerCase().includes('kumusta')
+        ? ttsText 
+        : `Kumusta! ${ttsText}`;
+
+      // Try multiple Filipino language variants for better accent
+      const filipinoOptions = {
+        language: 'fil-PH', // Filipino (Philippines) language
+        pitch: 1.5 , // Higher pitch for girl voice - more Filipino-like
+        rate: 0.6, // Much slower for Filipino children who don't speak English
+        quality: Speech.VoiceQuality.Enhanced,
+        voice: undefined,
+      };
+
+      // Alternative Filipino language codes to try
+      const alternativeFilipinoOptions = {
+        language: 'tl-PH', // Tagalog Philippines
+        pitch: 1.5,
+        rate: 0.6,
+        quality: Speech.VoiceQuality.Enhanced,
+        voice: undefined,
+      };
+
+      // Fallback to English with very Filipino-friendly settings
+      const englishOptions = {
+        language: 'en-US', // English fallback
+        pitch: 1.3, // Higher pitch for girl voice
+        rate: 0.8, // Very slow for non-English speaking Filipino children
+        quality: Speech.VoiceQuality.Enhanced,
+        voice: undefined,
+      };
+
+      const speechOptions = {
+        ...filipinoOptions,
+        onStart: () => {
+          console.log('TTS started with Filipino language');
+        },
+        onDone: () => {
+          console.log('TTS finished');
+          setIsSpeaking(false);
+        },
+        onStopped: () => {
+          console.log('TTS stopped');
+          setIsSpeaking(false);
+        },
+        onError: (error: any) => {
+          console.log('Primary Filipino TTS error, trying alternative Filipino:', error);
+          // Try alternative Filipino language code
+          Speech.speak(friendlyText, {
+            ...alternativeFilipinoOptions,
+            onStart: () => {
+              console.log('TTS started with alternative Filipino language');
+            },
+            onDone: () => {
+              console.log('TTS finished');
+              setIsSpeaking(false);
+            },
+            onStopped: () => {
+              console.log('TTS stopped');
+              setIsSpeaking(false);
+            },
+            onError: (altError: any) => {
+              console.log('Alternative Filipino TTS error, trying English fallback:', altError);
+              // Try with English as final fallback
+              Speech.speak(friendlyText, {
+                ...englishOptions,
+                onStart: () => {
+                  console.log('TTS started with English fallback');
+                },
+                onDone: () => {
+                  console.log('TTS finished');
+                  setIsSpeaking(false);
+                },
+                onStopped: () => {
+                  console.log('TTS stopped');
+                  setIsSpeaking(false);
+                },
+                onError: (fallbackError: any) => {
+                  console.log('English fallback TTS error:', fallbackError);
+                  setIsSpeaking(false);
+                  Alert.alert('Speech Error', 'Hindi ma-speak ang text. Subukan ulit.');
+                }
+              });
+            }
+          });
+        }
+      };
+
+      await Speech.speak(friendlyText, speechOptions);
+    } catch (error) {
+      console.error('TTS Error:', error);
+      setIsSpeaking(false);
+      Alert.alert('Speech Error', 'Hindi ma-speak ang text. Subukan ulit.');
+    }
+  };
+
+  const stopSpeaking = async () => {
+    try {
+      await Speech.stop();
+      setIsSpeaking(false);
+    } catch (error) {
+      console.error('Stop speech error:', error);
+    }
+  };
 
   // GPT API Health Test Handler
   const handleGptApiHealthTest = async () => {
@@ -499,6 +624,62 @@ export default function AdminDashboard() {
                 </View>
               </View>
               
+              {/* Text-to-Speech Testing Section */}
+              <View style={styles.ttsCard}>
+                <View style={styles.ttsHeader}>
+                  <MaterialCommunityIcons name="microphone-message" size={isSmallScreen ? 20 : 24} color="#27ae60" />
+                  <Text style={[styles.ttsTitle, { fontSize: isSmallScreen ? 14 : 16 }]}>Text-to-Speech Testing</Text>
+                </View>
+                
+                <View style={styles.ttsContent}>
+                  <Text style={[styles.ttsSubtitle, { fontSize: isSmallScreen ? 12 : 14 }]}>
+                    Test ang friendly Filipino girl voice para sa mga batang hindi marunong mag-English
+                  </Text>
+                  
+                  <TextInput
+                    style={[styles.ttsInput, { fontSize: isSmallScreen ? 14 : 16 }]}
+                    placeholder="Mag-type ng Filipino text (hal. 'Kumusta mga bata! Mag-aral tayo ng math! Isa, dalawa, tatlo!')"
+                    placeholderTextColor="#999"
+                    value={ttsText}
+                    onChangeText={setTtsText}
+                    multiline
+                    numberOfLines={3}
+                    textAlignVertical="top"
+                  />
+                  
+                  <View style={styles.ttsButtons}>
+                    <TouchableOpacity
+                      style={[styles.ttsButton, styles.ttsSpeakButton, isSpeaking && styles.ttsButtonDisabled]}
+                      onPress={speakText}
+                      disabled={isSpeaking}
+                    >
+                      <MaterialCommunityIcons 
+                        name={isSpeaking ? "stop" : "play"} 
+                        size={isSmallScreen ? 18 : 20} 
+                        color="#fff" 
+                      />
+                      <Text style={[styles.ttsButtonText, { fontSize: isSmallScreen ? 12 : 14 }]}>
+                        {isSpeaking ? 'Speaking...' : 'Speak'}
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    {isSpeaking && (
+                      <TouchableOpacity
+                        style={[styles.ttsButton, styles.ttsStopButton]}
+                        onPress={stopSpeaking}
+                      >
+                        <MaterialCommunityIcons name="stop" size={isSmallScreen ? 18 : 20} color="#fff" />
+                        <Text style={[styles.ttsButtonText, { fontSize: isSmallScreen ? 12 : 14 }]}>Stop</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  
+                  <Text style={[styles.ttsNote, { fontSize: isSmallScreen ? 10 : 12 }]}>
+                    💡 Ang boses ay magdadagdag ng "Kumusta!" at gagamit ng tunay na Filipino accent na madaling maintindihan ng mga batang hindi marunong mag-English. Mabagal at malinaw ang pagbigkas.
+                  </Text>
+                </View>
+              </View>
+              
                                                            {/* Combined API Health Status Section */}
                 <View style={styles.apiHealthCard}>
                   <View style={styles.apiHealthHeader}>
@@ -680,7 +861,7 @@ export default function AdminDashboard() {
                    paddingHorizontal: isSmallScreen ? 12 : 16,
                    paddingVertical: isSmallScreen ? 6 : 8
                  }]}>
-                   <AntDesign name="adduser" size={isSmallScreen ? 18 : 20} color="#fff" />
+                   <AntDesign name="user-add" size={isSmallScreen ? 18 : 20} color="#fff" />
                    <Text style={[styles.addButtonText, { 
                      fontSize: isSmallScreen ? 12 : 14 
                    }]}>Add Teacher</Text>
@@ -1828,5 +2009,79 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
+  },
+  
+  // TTS Styles
+  ttsCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#27ae60',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  ttsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  ttsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#27ae60',
+    marginLeft: 8,
+  },
+  ttsContent: {
+    gap: 12,
+  },
+  ttsSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 8,
+  },
+  ttsInput: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: '#fafafa',
+    fontSize: 16,
+    color: '#333',
+    minHeight: 80,
+  },
+  ttsButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  ttsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
+  ttsSpeakButton: {
+    backgroundColor: '#27ae60',
+  },
+  ttsStopButton: {
+    backgroundColor: '#ff5a5a',
+  },
+  ttsButtonDisabled: {
+    backgroundColor: '#ccc',
+  },
+  ttsButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  ttsNote: {
+    color: '#888',
+    fontStyle: 'italic',
+    marginTop: 4,
   },
 }); 
